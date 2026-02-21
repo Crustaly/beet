@@ -65,6 +65,9 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# In-memory store of all accepted submissions (survives only while server is running)
+_submissions: list[dict] = []
+
 
 # ---------------------------------------------------------------------------
 # Canton helpers (daml script over gRPC)
@@ -159,39 +162,53 @@ def _list_diagnosis_records() -> list:
 
 
 # ---------------------------------------------------------------------------
-# ADI helper
+# ADI helper — calls the ADI anchor microservice (server.js on port 8787)
 # ---------------------------------------------------------------------------
 
-def anchor_to_adi(session_id: str, contract_payload: dict) -> dict:
-    """Hash the finalized contract payload and POST the hash to ADI."""
-    canonical    = json.dumps(contract_payload, sort_keys=True)
-    record_hash  = hashlib.sha256(canonical.encode()).hexdigest()
+ADI_SERVICE_URL = os.getenv("ADI_SERVICE_URL", "http://localhost:8787")
+
+def anchor_to_adi(session_id: str, data: dict, contract_id: str) -> dict:
+    """
+    POST a DiagnosisRecord to the ADI anchor service (server.js).
+
+    The service hashes the payload with keccak256 and writes it on-chain
+    to the ADI testnet smart contract.
+
+    Expected body shape matches server.js validate():
+      { contractId, payload: { clinic, patient, publicHealthAuth,
+        sessionId, diagnosis, symptomHash, confidence, submittedAt, anchored } }
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     body = {
-        "asset_type": "DiagnosisRecord",
-        "session_id": session_id,
-        "hash":       record_hash,
-        "metadata": {
-            "diagnosis":    contract_payload.get("diagnosis"),
-            "confidence":   contract_payload.get("confidence"),
-            "submitted_at": contract_payload.get("submittedAt"),
-            "clinic":       contract_payload.get("clinic"),
-            "anchored_at":  datetime.now(timezone.utc).isoformat(),
+        "contractId": contract_id,
+        "payload": {
+            "clinic":           CLINIC_PARTY,
+            "patient":          PATIENT_PARTY,
+            "publicHealthAuth": PUBLIC_HEALTH_AUTH,
+            "sessionId":        session_id,
+            "diagnosis":        data.get("diagnosis", "Unknown"),
+            "symptomHash":      data.get("symptom_hash", ""),
+            "confidence":       str(data.get("confidence", 0)),
+            "submittedAt":      now_iso,
+            "anchored":         False,
         },
     }
 
-    headers = {"Content-Type": "application/json"}
-    if ADI_API_KEY:
-        headers["Authorization"] = f"Bearer {ADI_API_KEY}"
-
     resp = requests.post(
-        f"{ADI_API_URL}/v1/anchor",
-        headers=headers,
+        f"{ADI_SERVICE_URL}/anchor",
+        headers={"Content-Type": "application/json"},
         json=body,
-        timeout=10,
+        timeout=15,
     )
     resp.raise_for_status()
-    return {**resp.json(), "record_hash": record_hash}
+    result = resp.json()
+    return {
+        "tx_hash":     result.get("txHash"),
+        "block":       result.get("blockNumber"),
+        "payload_hash": result.get("payloadHash"),
+        "record_hash": result.get("payloadHash"),   # alias for UI compat
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -258,17 +275,31 @@ def submit():
     contract_id = canton_resp.get("contractId", "unknown")
     logger.info(f"[submit] Canton PendingDiagnosis created: {contract_id}")
 
-    # Step 2 — Anchor to ADI (non-fatal)
+    # Step 2 — Anchor to ADI anchor service (non-fatal)
     adi_result = {}
     try:
         adi_result = anchor_to_adi(
             data["session_id"],
-            canton_resp.get("payload", data),
+            data,
+            contract_id,
         )
         logger.info(f"[submit] ADI anchor hash={adi_result.get('record_hash', '')[:12]}...")
     except requests.exceptions.RequestException as e:
         logger.warning(f"[submit] ADI anchoring failed (non-fatal): {e}")
         adi_result = {"error": str(e), "record_hash": None}
+
+    # Step 3 — Cache full record for the UI
+    record = {
+        "session_id":         data["session_id"],
+        "canton_contract_id": contract_id,
+        "diagnosis":          data["diagnosis"],
+        "confidence":         float(data["confidence"]),
+        "symptom_hash":       data["symptom_hash"],
+        "adi_hash":           adi_result.get("record_hash"),
+        "submitted_at":       datetime.now(timezone.utc).isoformat(),
+        "status":             "pending",
+    }
+    _submissions.insert(0, record)   # newest first
 
     return jsonify({
         "status":             "accepted",
@@ -315,9 +346,9 @@ def confirm():
 
 @app.route("/records", methods=["GET"])
 def list_records():
-    """Fetch all DiagnosisRecord contracts visible to the clinic party."""
+    """Return cached submissions with full payload for the UI dashboard."""
     try:
-        records = _list_diagnosis_records()
+        records = _submissions
         return jsonify({"count": len(records), "records": records}), 200
     except Exception as e:
         logger.error(f"[records] Canton query error: {e}")

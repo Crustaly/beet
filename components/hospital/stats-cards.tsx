@@ -1,43 +1,37 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Activity, MapPin, Users, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react"
+import { fetchRecords } from "@/lib/beet-api"
 
-const stats = [
-  {
-    label: "Active Outbreaks",
-    value: "12",
-    change: "+3",
-    trend: "up" as const,
-    icon: AlertTriangle,
-    region: "Across 4 regions",
-  },
-  {
-    label: "Cities Affected",
-    value: "28",
-    change: "+5",
-    trend: "up" as const,
-    icon: MapPin,
-    region: "6 countries",
-  },
-  {
-    label: "Active Cases",
-    value: "4,271",
-    change: "-142",
-    trend: "down" as const,
-    icon: Users,
-    region: "Last 24 hours",
-  },
-  {
-    label: "Sensor Signals",
-    value: "18.4K",
-    change: "+2.1K",
-    trend: "up" as const,
-    icon: Activity,
-    region: "Signals today",
-  },
+const BASE_STATS = [
+  { label: "Active Outbreaks",  value: "12",     change: "+3",    trend: "up"   as const, icon: AlertTriangle, region: "Across 4 regions" },
+  { label: "Cities Affected",   value: "28",     change: "+5",    trend: "up"   as const, icon: MapPin,        region: "6 countries" },
+  { label: "Active Cases",      value: "4,271",  change: "-142",  trend: "down" as const, icon: Users,         region: "Last 24 hours" },
+  { label: "Sensor Signals",    value: "18.4K",  change: "+2.1K", trend: "up"   as const, icon: Activity,      region: "Signals today" },
 ]
 
 export function HospitalStatsCards() {
+  const [signalCount, setSignalCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const data = await fetchRecords()
+        if (data.count > 0) setSignalCount(data.count)
+      } catch { /* keep default */ }
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => clearInterval(id)
+  }, [])
+
+  const stats = BASE_STATS.map((s) =>
+    s.label === "Sensor Signals" && signalCount !== null
+      ? { ...s, value: signalCount.toLocaleString(), change: `+${signalCount}`, region: "Live from Canton" }
+      : s
+  )
+
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {stats.map((stat) => (
@@ -51,31 +45,15 @@ export function HospitalStatsCards() {
               <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 shadow-[0_0_12px_rgba(220,38,38,0.1)]">
                 <stat.icon className="h-5 w-5 text-primary" />
               </div>
-              <div
-                className={`flex items-center gap-1 text-xs font-medium ${
-                  stat.trend === "up"
-                    ? "text-primary"
-                    : "text-emerald-400"
-                }`}
-              >
-                {stat.trend === "up" ? (
-                  <TrendingUp className="h-3 w-3" />
-                ) : (
-                  <TrendingDown className="h-3 w-3" />
-                )}
+              <div className={`flex items-center gap-1 text-xs font-medium ${stat.trend === "up" ? "text-primary" : "text-emerald-400"}`}>
+                {stat.trend === "up" ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
                 {stat.change}
               </div>
             </div>
             <div className="mt-4">
-              <p className="font-mono text-3xl font-bold text-foreground">
-                {stat.value}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {stat.label}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground/70">
-                {stat.region}
-              </p>
+              <p className="font-mono text-3xl font-bold text-foreground">{stat.value}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{stat.label}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground/70">{stat.region}</p>
             </div>
           </div>
         </div>
