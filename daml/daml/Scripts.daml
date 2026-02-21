@@ -1,0 +1,88 @@
+-- | Beet DAML Scripts
+-- | Called by the backend via `daml script --ledger-host localhost --ledger-port 6865`
+-- | to create and manage contracts on the Canton ledger.
+
+module Scripts where
+
+import Main
+import Daml.Script
+
+
+-- ---------------------------------------------------------------------------
+-- Argument types (JSON-serializable, passed via --input-file)
+-- ---------------------------------------------------------------------------
+
+data CreatePendingArgs = CreatePendingArgs
+  with
+    clinicParty  : Party
+    sessionId    : Text
+    diagnosis    : Text
+    symptomHash  : Text
+    confidence   : Decimal
+  deriving (Eq, Show)
+
+data ConfirmArgs = ConfirmArgs
+  with
+    clinicParty      : Party
+    pendingCid       : ContractId PendingDiagnosis
+    patientParty     : Party
+    publicHealthAuth : Party
+  deriving (Eq, Show)
+
+data MarkAnchoredArgs = MarkAnchoredArgs
+  with
+    clinicParty : Party
+    recordCid   : ContractId DiagnosisRecord
+  deriving (Eq, Show)
+
+data QueryArgs = QueryArgs
+  with
+    clinicParty : Party
+  deriving (Eq, Show)
+
+
+-- ---------------------------------------------------------------------------
+-- Scripts
+-- ---------------------------------------------------------------------------
+
+-- | Create a PendingDiagnosis contract.
+-- Returns the contract ID as Text.
+createPendingDiagnosis : CreatePendingArgs -> Script Text
+createPendingDiagnosis args = do
+  now <- getTime
+  cid <- submit args.clinicParty do
+    createCmd PendingDiagnosis with
+      clinic      = args.clinicParty
+      sessionId   = args.sessionId
+      diagnosis   = args.diagnosis
+      symptomHash = args.symptomHash
+      confidence  = args.confidence
+      submittedAt = now
+  return (show cid)
+
+
+-- | Confirm a PendingDiagnosis → DiagnosisRecord.
+-- Returns the new DiagnosisRecord contract ID as Text.
+confirmDiagnosis : ConfirmArgs -> Script Text
+confirmDiagnosis args = do
+  cid <- submit args.clinicParty do
+    exerciseCmd args.pendingCid Confirm with
+      patient          = args.patientParty
+      publicHealthAuth = args.publicHealthAuth
+  return (show cid)
+
+
+-- | Mark a DiagnosisRecord as anchored in ADI.
+markAnchored : MarkAnchoredArgs -> Script Text
+markAnchored args = do
+  cid <- submit args.clinicParty do
+    exerciseCmd args.recordCid MarkAnchored
+  return (show cid)
+
+
+-- | List all DiagnosisRecord contracts visible to a party.
+-- Returns a list of contract IDs as Text.
+listDiagnosisRecords : QueryArgs -> Script [Text]
+listDiagnosisRecords args = do
+  contracts <- query @DiagnosisRecord args.clinicParty
+  return (map (\(cid, _) -> show cid) contracts)
