@@ -1,0 +1,5 @@
+{
+  "/hospital-operations/page": "app/hospital-operations/page.js",
+  "/ngo-governments/page": "app/ngo-governments/page.js",
+  "/page": "app/page.js"
+}
