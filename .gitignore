@@ -3,5 +3,7 @@
 dist
 target
 node_modules
+.next
+ui/.next
 .env
 *.log
